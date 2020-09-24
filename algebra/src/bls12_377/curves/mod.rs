@@ -8,6 +8,9 @@ pub mod g1;
 pub mod g2;
 
 #[cfg(test)]
+pub mod eip2539_test;
+
+#[cfg(test)]
 mod tests;
 
 pub struct Parameters;
