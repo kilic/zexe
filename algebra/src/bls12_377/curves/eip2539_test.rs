@@ -5,12 +5,9 @@ use algebra_core::{
     test_rng, CanonicalSerialize, One, Zero,
 };
 
-use crate::bls12_377::{
-    g1, g2, Bls12_377, Fq, Fq12, Fq2, Fr, G1Affine, G1Projective, G2Affine, G2Projective,
-    Parameters,
-};
+use crate::bls12_377::*;
 
-use core::ops::{AddAssign, MulAssign, Neg};
+use core::ops::{AddAssign, Mul, MulAssign, Neg};
 use rand::Rng;
 
 use serde::{Deserialize, Serialize};
@@ -20,12 +17,21 @@ use std::io::prelude::*;
 const NUM_TESTS: usize = 100;
 const PREFIX: &str = "bls12377";
 const FE_SIZE: usize = 48;
+const SCALAR_SIZE: usize = 32;
 const WORD_SIZE: usize = 64;
 
 #[derive(Serialize, Deserialize)]
 struct VectorSuccess {
     input: String,
     expected: String,
+    name: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct VectorFail {
+    input: String,
+    expected_error: String,
+    name: String,
 }
 
 fn write_vectors(vectors: Vec<VectorSuccess>, name: &str) {
@@ -35,21 +41,91 @@ fn write_vectors(vectors: Vec<VectorSuccess>, name: &str) {
         .expect("must write vectors");
 }
 
+fn write_vectors_fail(vectors: Vec<VectorFail>, name: &str) {
+    let serialized: String = serde_json::to_string(&vectors).unwrap();
+    let mut file = File::create(PREFIX.to_string() + name + ".json").expect("must create the file");
+    file.write(serialized.as_bytes())
+        .expect("must write vectors");
+}
+
+fn number_larger_than_modulus() -> Vec<u8> {
+    hex::decode("01ae3a4617c510eac63b05c06ca1493b1a22d9f300f5138f1ef3622fba094800170b5d44300000008508c00000000002")
+        .expect("must decode")
+}
+
+fn rand_g1_point_not_on_correct_subgroup() -> G1Projective {
+    let mut rng = test_rng();
+
+    loop {
+        let x: Fq = rng.gen();
+        let mut y: Fq = x.mul(x);
+        y.mul_assign(x);
+        y.add_assign(g1::Parameters::COEFF_B);
+        // y.sqrt().
+        if let Some(y) = y.sqrt() {
+            let p = G1Affine::new(x, y, false);
+            assert!(p.is_on_curve());
+            assert!(!p.is_in_correct_subgroup_assuming_on_curve());
+            return p.into_projective();
+        }
+    }
+}
+
+fn rand_g2_point_not_on_correct_subgroup() -> G2Projective {
+    let mut rng = test_rng();
+
+    loop {
+        let x: Fq2 = rng.gen();
+        let mut y: Fq2 = x.mul(x);
+        y.mul_assign(x);
+        y.add_assign(g2::Parameters::COEFF_B);
+        if let Some(y) = y.sqrt() {
+            let p = G2Affine::new(x, y, false);
+            assert!(p.is_on_curve());
+            assert!(!p.is_in_correct_subgroup_assuming_on_curve());
+            return p.into_projective();
+        }
+    }
+}
+
+fn rand_g1_point_not_on_curve() -> G1Projective {
+    let mut rng = test_rng();
+    let x: Fq = rng.gen();
+    let y: Fq = rng.gen();
+    let p = G1Affine::new(x, y, false);
+    assert!(!p.is_on_curve());
+    p.into_projective()
+}
+
+fn rand_g2_point_not_on_curve() -> G2Projective {
+    let mut rng = test_rng();
+    let x: Fq2 = rng.gen();
+    let y: Fq2 = rng.gen();
+    let p = G2Affine::new(x, y, false);
+    assert!(!p.is_on_curve());
+    p.into_projective()
+}
+
 #[test]
 fn generate_test_vectors() {
-    gen_g1_add_vectors();
-    gen_g1_mul_vectors();
-    gen_g1_multiexp_vectors();
-    gen_g2_add_vectors();
-    gen_g2_mul_vectors();
-    gen_g2_multiexp_vectors();
-    gen_pairing_vectors();
+    // gen_g1_add_vectors();
+    // gen_g1_mul_vectors();
+    // gen_g1_multiexp_vectors();
+    // gen_g2_add_vectors();
+    // gen_g2_mul_vectors();
+    // gen_g2_multiexp_vectors();
+    // gen_pairing_vectors();
+    gen_fail_g1_add_vectors();
+    gen_fail_g1_mul_vectors();
+    gen_fail_g1_multiexp_vectors();
+    gen_fail_g2_add_vectors();
+    gen_fail_g2_mul_vectors();
+    gen_fail_g2_multiexp_vectors();
+    gen_fail_pairing();
 }
 
 fn encode_g1(p: G1Projective) -> Vec<u8> {
-    let fe_size: usize = 48;
-    let word_size: usize = 64;
-    let pad_zeros: Vec<u8> = vec![0u8; word_size - fe_size];
+    let pad_zeros: Vec<u8> = vec![0u8; WORD_SIZE - FE_SIZE];
     let mut bytes: Vec<u8> = vec![];
 
     let mut buf_x = vec![];
@@ -131,7 +207,7 @@ fn encode_fr(p: Fr) -> Vec<u8> {
 fn gen_g1_add_vectors() {
     let mut rng = test_rng();
     let mut vectors: Vec<VectorSuccess> = vec![];
-    for _ in 0..NUM_TESTS {
+    for i in 0..NUM_TESTS {
         let mut input_bytes: Vec<u8> = vec![];
         let mut a: G1Projective = rng.gen();
         let b: G1Projective = rng.gen();
@@ -147,7 +223,9 @@ fn gen_g1_add_vectors() {
         let vector = VectorSuccess {
             input,
             expected: result,
+            name: format!("{}_{}", "g1_add", i + 1),
         };
+
         vectors.push(vector);
     }
     write_vectors(vectors, "_g1_add");
@@ -156,7 +234,7 @@ fn gen_g1_add_vectors() {
 fn gen_g1_mul_vectors() {
     let mut rng = test_rng();
     let mut vectors: Vec<VectorSuccess> = vec![];
-    for _ in 0..NUM_TESTS {
+    for i in 0..NUM_TESTS {
         let mut input_bytes: Vec<u8> = vec![];
 
         let mut a: G1Projective = rng.gen();
@@ -174,6 +252,7 @@ fn gen_g1_mul_vectors() {
         let vector = VectorSuccess {
             input,
             expected: result,
+            name: format!("{}_{}", "g1_mul", i + 1),
         };
         vectors.push(vector);
     }
@@ -206,6 +285,7 @@ fn gen_g1_multiexp_vectors() {
         let vector = VectorSuccess {
             input,
             expected: result,
+            name: format!("{}_{}", "g1_multiexp", i + 1),
         };
         vectors.push(vector);
     }
@@ -215,7 +295,7 @@ fn gen_g1_multiexp_vectors() {
 fn gen_g2_add_vectors() {
     let mut rng = test_rng();
     let mut vectors: Vec<VectorSuccess> = vec![];
-    for _ in 0..NUM_TESTS {
+    for i in 0..NUM_TESTS {
         let mut input_bytes: Vec<u8> = vec![];
         let mut a: G2Projective = rng.gen();
         let b: G2Projective = rng.gen();
@@ -231,6 +311,7 @@ fn gen_g2_add_vectors() {
         let vector = VectorSuccess {
             input,
             expected: result,
+            name: format!("{}_{}", "g2_add", i + 1),
         };
         vectors.push(vector);
     }
@@ -240,7 +321,7 @@ fn gen_g2_add_vectors() {
 fn gen_g2_mul_vectors() {
     let mut rng = test_rng();
     let mut vectors: Vec<VectorSuccess> = vec![];
-    for _ in 0..NUM_TESTS {
+    for i in 0..NUM_TESTS {
         let mut input_bytes: Vec<u8> = vec![];
 
         let mut a: G2Projective = rng.gen();
@@ -258,6 +339,7 @@ fn gen_g2_mul_vectors() {
         let vector = VectorSuccess {
             input,
             expected: result,
+            name: format!("{}_{}", "g2_mul", i + 1),
         };
         vectors.push(vector);
     }
@@ -290,6 +372,7 @@ fn gen_g2_multiexp_vectors() {
         let vector = VectorSuccess {
             input,
             expected: result,
+            name: format!("{}_{}", "g2_multiexp", i),
         };
         vectors.push(vector);
     }
@@ -324,6 +407,7 @@ fn gen_pairing_vectors() {
             let vector = VectorSuccess {
                 input,
                 expected: hex::encode(positive_result_bytes.clone()),
+                name: format!("{}", "g2_pairing_1"),
             };
             vectors.push(vector);
 
@@ -338,6 +422,7 @@ fn gen_pairing_vectors() {
             let vector = VectorSuccess {
                 input,
                 expected: hex::encode(positive_result_bytes.clone()),
+                name: format!("{}", "g2_pairing_2"),
             };
             vectors.push(vector);
         }
@@ -380,6 +465,7 @@ fn gen_pairing_vectors() {
                 let vector = VectorSuccess {
                     input,
                     expected: result,
+                    name: format!("{}_{}", "g2_pairing", i + 2),
                 };
                 vectors.push(vector);
             }
@@ -408,10 +494,608 @@ fn gen_pairing_vectors() {
             let vector = VectorSuccess {
                 input,
                 expected: result,
+                name: format!("{}_{}", "g2_pairing_0", NUM_TESTS + i + 2),
             };
             vectors.push(vector);
         }
     }
 
     write_vectors(vectors, "_pairing");
+}
+
+fn gen_fail_vectors(input_len: usize) -> Vec<VectorFail> {
+    let mut vectors: Vec<VectorFail> = vec![];
+
+    // invalid length: empty
+    {
+        let input: String = hex::encode(vec![]);
+        let vector = VectorFail {
+            input: String::from(""),
+            expected_error: String::from("invalid input length"),
+            name: format!("invalid_input_length_empty"),
+        };
+        vectors.push(vector);
+    }
+
+    // invalid length: short
+    {
+        let input: String = hex::encode(vec![0u8; input_len - 1]);
+        let vector = VectorFail {
+            input: String::from(""),
+            expected_error: String::from("invalid input length"),
+            name: format!("invalid_input_length_short"),
+        };
+        vectors.push(vector);
+    }
+
+    // invalid length: long
+    {
+        let input: String = hex::encode(vec![1u8; input_len + 1]);
+        let vector = VectorFail {
+            input,
+            expected_error: String::from("invalid input length"),
+            name: format!("invalid_input_length_large"),
+        };
+        vectors.push(vector);
+    }
+
+    // violate top zeros
+    {
+        let input: String = hex::encode(vec![1u8; input_len]);
+        let vector = VectorFail {
+            input,
+            expected_error: String::from("invalid field element top bytes"),
+            name: format!("violate_top_zero_bytes"),
+        };
+        vectors.push(vector);
+    }
+
+    vectors
+}
+
+fn gen_fail_g1_add_vectors() {
+    let mut rng = test_rng();
+
+    let input_len = 4 * WORD_SIZE;
+    let pad_zeros: Vec<u8> = vec![0u8; WORD_SIZE - FE_SIZE];
+
+    let mut vectors: Vec<VectorFail> = gen_fail_vectors(input_len);
+
+    // large modulus
+    {
+        let a: G1Projective = rng.gen();
+
+        let mut input_bytes: Vec<u8> = vec![];
+        let a_bytes = encode_g1(a);
+        input_bytes.extend(a_bytes);
+        input_bytes.extend(pad_zeros.clone());
+        input_bytes.extend(number_larger_than_modulus());
+        input_bytes.extend(vec![0u8; WORD_SIZE]);
+
+        let input: String = hex::encode(input_bytes.clone());
+        let vector = VectorFail {
+            input,
+            expected_error: String::from("must be less than modulus"),
+            name: format!("large_field_element"),
+        };
+        vectors.push(vector);
+    }
+
+    // not on curve
+    {
+        let a: G1Projective = rng.gen();
+        let b: G1Projective = rand_g1_point_not_on_curve();
+
+        let a_bytes = encode_g1(a);
+        let e_bytes = encode_g1(b);
+
+        let mut input_bytes: Vec<u8> = vec![];
+        input_bytes.extend(a_bytes);
+        input_bytes.extend(e_bytes);
+
+        let input: String = hex::encode(input_bytes.clone());
+        let vector = VectorFail {
+            input,
+            expected_error: String::from("point is not on curve"),
+            name: format!("point_not_on_curve"),
+        };
+        vectors.push(vector);
+    }
+    write_vectors_fail(vectors, "_g1_add_fail");
+}
+
+fn gen_fail_g1_mul_vectors() {
+    let input_len = 2 * WORD_SIZE + SCALAR_SIZE;
+    let pad_zeros: Vec<u8> = vec![0u8; WORD_SIZE - FE_SIZE];
+    let mut vectors: Vec<VectorFail> = gen_fail_vectors(input_len);
+
+    // large modulus
+    {
+        let mut input_bytes: Vec<u8> = vec![];
+        // x
+        input_bytes.extend(pad_zeros.clone());
+        input_bytes.extend(number_larger_than_modulus());
+        // y
+        input_bytes.extend(vec![0u8; WORD_SIZE]);
+        // e
+        input_bytes.extend(vec![0u8; SCALAR_SIZE]);
+
+        let input: String = hex::encode(input_bytes.clone());
+        let vector = VectorFail {
+            input,
+            expected_error: String::from("must be less than modulus"),
+            name: format!("large_field_element"),
+        };
+        vectors.push(vector);
+    }
+
+    // not on curve
+    {
+        let a: G1Projective = rand_g1_point_not_on_curve();
+
+        let a_bytes = encode_g1(a);
+
+        let mut input_bytes: Vec<u8> = vec![];
+        input_bytes.extend(a_bytes);
+        input_bytes.extend(vec![0u8; SCALAR_SIZE]);
+
+        let input: String = hex::encode(input_bytes.clone());
+        let vector = VectorFail {
+            input,
+            expected_error: String::from("point is not on curve"),
+            name: format!("point_not_on_curve"),
+        };
+        vectors.push(vector);
+    }
+    write_vectors_fail(vectors, "_g1_mul_fail");
+}
+
+fn gen_fail_g1_multiexp_vectors() {
+    let mut rng = test_rng();
+
+    let input_len = 3 * (2 * WORD_SIZE + SCALAR_SIZE);
+    let pad_zeros: Vec<u8> = vec![0u8; WORD_SIZE - FE_SIZE];
+
+    let mut vectors: Vec<VectorFail> = gen_fail_vectors(input_len);
+
+    // large modulus
+    {
+        let a: G1Projective = rng.gen();
+        let e1: Fr = rng.gen();
+        let b: G1Projective = rng.gen();
+        let e2: Fr = rng.gen();
+
+        let mut input_bytes: Vec<u8> = vec![];
+
+        let a_bytes = encode_g1(a);
+        let e1_bytes = encode_fr(e1);
+        input_bytes.extend(a_bytes);
+        input_bytes.extend(e1_bytes);
+
+        let b_bytes = encode_g1(b);
+        let e2_bytes = encode_fr(e2);
+        input_bytes.extend(b_bytes);
+        input_bytes.extend(e2_bytes);
+
+        input_bytes.extend(pad_zeros.clone());
+        input_bytes.extend(number_larger_than_modulus());
+        // y
+        input_bytes.extend(vec![0u8; WORD_SIZE]);
+        // e
+        input_bytes.extend(vec![0u8; SCALAR_SIZE]);
+
+        let input: String = hex::encode(input_bytes.clone());
+        let vector = VectorFail {
+            input,
+            expected_error: String::from("must be less than modulus"),
+            name: format!("large_field_element"),
+        };
+        vectors.push(vector);
+    }
+
+    // not on curve
+    {
+        let a: G1Projective = rng.gen();
+        let e1: Fr = rng.gen();
+        let b: G1Projective = rng.gen();
+        let e2: Fr = rng.gen();
+        let c = rand_g1_point_not_on_curve();
+        let e3: Fr = rng.gen();
+
+        let mut input_bytes: Vec<u8> = vec![];
+
+        let a_bytes = encode_g1(a);
+        let e1_bytes = encode_fr(e1);
+        input_bytes.extend(a_bytes);
+        input_bytes.extend(e1_bytes);
+
+        let b_bytes = encode_g1(b);
+        let e2_bytes = encode_fr(e2);
+        input_bytes.extend(b_bytes);
+        input_bytes.extend(e2_bytes);
+
+        let c_bytes = encode_g1(c);
+        let e3_bytes = encode_fr(e3);
+        input_bytes.extend(c_bytes);
+        input_bytes.extend(e3_bytes);
+
+        let input: String = hex::encode(input_bytes.clone());
+        let vector = VectorFail {
+            input,
+            expected_error: String::from("point is not on curve"),
+            name: format!("point_not_on_curve"),
+        };
+        vectors.push(vector);
+    }
+    write_vectors_fail(vectors, "_g1_multiexp_fail");
+}
+
+fn gen_fail_g2_add_vectors() {
+    let mut rng = test_rng();
+
+    let input_len = 8 * WORD_SIZE;
+    let pad_zeros: Vec<u8> = vec![0u8; WORD_SIZE - FE_SIZE];
+
+    let mut vectors: Vec<VectorFail> = gen_fail_vectors(input_len);
+
+    // large modulus
+    {
+        let a: G2Projective = rng.gen();
+
+        let mut input_bytes: Vec<u8> = vec![];
+        let a_bytes = encode_g2(a);
+
+        input_bytes.extend(a_bytes);
+
+        // x0
+        input_bytes.extend(pad_zeros.clone());
+        input_bytes.extend(number_larger_than_modulus());
+        // x1, y0, y1
+        input_bytes.extend(vec![0u8; WORD_SIZE]);
+        input_bytes.extend(vec![0u8; WORD_SIZE]);
+        input_bytes.extend(vec![0u8; WORD_SIZE]);
+
+        let input: String = hex::encode(input_bytes.clone());
+        let vector = VectorFail {
+            input,
+            expected_error: String::from("must be less than modulus"),
+            name: format!("large_field_element"),
+        };
+        vectors.push(vector);
+    }
+
+    // not on curve
+    {
+        let a: G2Projective = rng.gen();
+        let b: G2Projective = rand_g2_point_not_on_curve();
+
+        let a_bytes = encode_g2(a);
+        let e_bytes = encode_g2(b);
+
+        let mut input_bytes: Vec<u8> = vec![];
+        input_bytes.extend(a_bytes);
+        input_bytes.extend(e_bytes);
+
+        let input: String = hex::encode(input_bytes.clone());
+        let vector = VectorFail {
+            input,
+            expected_error: String::from("point is not on curve"),
+            name: format!("point_not_on_curve"),
+        };
+        vectors.push(vector);
+    }
+    write_vectors_fail(vectors, "_g2_add_fail");
+}
+
+fn gen_fail_g2_mul_vectors() {
+    let input_len = 2 * 2 * WORD_SIZE + SCALAR_SIZE;
+    let pad_zeros: Vec<u8> = vec![0u8; WORD_SIZE - FE_SIZE];
+    let mut vectors: Vec<VectorFail> = gen_fail_vectors(input_len);
+
+    // large modulus
+    {
+        let mut input_bytes: Vec<u8> = vec![];
+
+        // x0
+        input_bytes.extend(pad_zeros.clone());
+        input_bytes.extend(number_larger_than_modulus());
+        // x1, y0, y1
+        input_bytes.extend(vec![0u8; WORD_SIZE]);
+        input_bytes.extend(vec![0u8; WORD_SIZE]);
+        input_bytes.extend(vec![0u8; WORD_SIZE]);
+        // e
+        input_bytes.extend(vec![0u8; SCALAR_SIZE]);
+
+        let input: String = hex::encode(input_bytes.clone());
+        let vector = VectorFail {
+            input,
+            expected_error: String::from("must be less than modulus"),
+            name: format!("large_field_element"),
+        };
+        vectors.push(vector);
+    }
+
+    // not on curve
+    {
+        let a: G2Projective = rand_g2_point_not_on_curve();
+
+        let a_bytes = encode_g2(a);
+
+        let mut input_bytes: Vec<u8> = vec![];
+        input_bytes.extend(a_bytes);
+        input_bytes.extend(vec![0u8; SCALAR_SIZE]);
+
+        let input: String = hex::encode(input_bytes.clone());
+        let vector = VectorFail {
+            input,
+            expected_error: String::from("point is not on curve"),
+            name: format!("point_not_on_curve"),
+        };
+        vectors.push(vector);
+    }
+    write_vectors_fail(vectors, "_g2_mul_fail");
+}
+
+fn gen_fail_g2_multiexp_vectors() {
+    let mut rng = test_rng();
+
+    let input_len = 3 * (2 * 2 * WORD_SIZE + SCALAR_SIZE);
+    let pad_zeros: Vec<u8> = vec![0u8; WORD_SIZE - FE_SIZE];
+
+    let mut vectors: Vec<VectorFail> = gen_fail_vectors(input_len);
+
+    // large modulus
+    {
+        let a: G2Projective = rng.gen();
+        let e1: Fr = rng.gen();
+        let b: G2Projective = rng.gen();
+        let e2: Fr = rng.gen();
+
+        let mut input_bytes: Vec<u8> = vec![];
+
+        let a_bytes = encode_g2(a);
+        let e1_bytes = encode_fr(e1);
+        input_bytes.extend(a_bytes);
+        input_bytes.extend(e1_bytes);
+
+        let b_bytes = encode_g2(b);
+        let e2_bytes = encode_fr(e2);
+        input_bytes.extend(b_bytes);
+        input_bytes.extend(e2_bytes);
+
+        // x0
+        input_bytes.extend(pad_zeros.clone());
+        input_bytes.extend(number_larger_than_modulus());
+        // x1, y0, y1
+        input_bytes.extend(vec![0u8; WORD_SIZE]);
+        input_bytes.extend(vec![0u8; WORD_SIZE]);
+        input_bytes.extend(vec![0u8; WORD_SIZE]);
+        // e
+        input_bytes.extend(vec![0u8; SCALAR_SIZE]);
+
+        let input: String = hex::encode(input_bytes.clone());
+        let vector = VectorFail {
+            input,
+            expected_error: String::from("must be less than modulus"),
+            name: format!("large_field_element"),
+        };
+        vectors.push(vector);
+    }
+
+    // not on curve
+    {
+        let a: G2Projective = rng.gen();
+        let e1: Fr = rng.gen();
+        let b: G2Projective = rng.gen();
+        let e2: Fr = rng.gen();
+        let c = rand_g2_point_not_on_curve();
+        let e3: Fr = rng.gen();
+
+        let mut input_bytes: Vec<u8> = vec![];
+
+        let a_bytes = encode_g2(a);
+        let e1_bytes = encode_fr(e1);
+        input_bytes.extend(a_bytes);
+        input_bytes.extend(e1_bytes);
+
+        let b_bytes = encode_g2(b);
+        let e2_bytes = encode_fr(e2);
+        input_bytes.extend(b_bytes);
+        input_bytes.extend(e2_bytes);
+
+        let c_bytes = encode_g2(c);
+        let e3_bytes = encode_fr(e3);
+        input_bytes.extend(c_bytes);
+        input_bytes.extend(e3_bytes);
+
+        let input: String = hex::encode(input_bytes.clone());
+        let vector = VectorFail {
+            input,
+            expected_error: String::from("point is not on curve"),
+            name: format!("point_not_on_curve"),
+        };
+        vectors.push(vector);
+    }
+    write_vectors_fail(vectors, "_g2_multiexp_fail");
+}
+
+fn gen_fail_pairing() {
+    let mut rng = test_rng();
+    let input_len = 3 * 4 * WORD_SIZE;
+    let mut vectors: Vec<VectorFail> = gen_fail_vectors(input_len);
+    let pad_zeros: Vec<u8> = vec![0u8; WORD_SIZE - FE_SIZE];
+
+    // large modulus
+    {
+        let mut input_bytes: Vec<u8> = vec![];
+
+        let a1: G1Projective = rng.gen();
+        let a2: G2Projective = rng.gen();
+        let a1_bytes = encode_g1(a1);
+        let a2_bytes = encode_g2(a2);
+        input_bytes.extend(a1_bytes);
+        input_bytes.extend(a2_bytes);
+
+        let b1: G1Projective = rng.gen();
+        let b2: G2Projective = rng.gen();
+        let b1_bytes = encode_g1(b1);
+        let b2_bytes = encode_g2(b2);
+
+        input_bytes.extend(b1_bytes);
+        input_bytes.extend(b2_bytes);
+
+        // c1x
+        input_bytes.extend(pad_zeros.clone());
+        input_bytes.extend(number_larger_than_modulus());
+        // c1y
+        input_bytes.extend(vec![0u8; WORD_SIZE]);
+        // c2
+        input_bytes.extend(vec![0u8; 4 * WORD_SIZE]);
+
+        let input: String = hex::encode(input_bytes.clone());
+        let vector = VectorFail {
+            input,
+            expected_error: String::from("must be less than modulus"),
+            name: format!("large_field_element"),
+        };
+        vectors.push(vector);
+    }
+
+    // not on curve g1
+    {
+        let mut input_bytes: Vec<u8> = vec![];
+
+        let a1: G1Projective = rng.gen();
+        let a2: G2Projective = rng.gen();
+        let a1_bytes = encode_g1(a1);
+        let a2_bytes = encode_g2(a2);
+        input_bytes.extend(a1_bytes);
+        input_bytes.extend(a2_bytes);
+
+        let b1: G1Projective = rng.gen();
+        let b2: G2Projective = rng.gen();
+        let b1_bytes = encode_g1(b1);
+        let b2_bytes = encode_g2(b2);
+        input_bytes.extend(b1_bytes);
+        input_bytes.extend(b2_bytes);
+
+        let c1: G1Projective = rand_g1_point_not_on_curve();
+        let c2: G2Projective = rng.gen();
+        let c1_bytes = encode_g1(c1);
+        let c2_bytes = encode_g2(c2);
+        input_bytes.extend(c1_bytes);
+        input_bytes.extend(c2_bytes);
+
+        let input: String = hex::encode(input_bytes.clone());
+        let vector = VectorFail {
+            input,
+            expected_error: String::from("point is not on curve"),
+            name: format!("point_not_on_curve_g1"),
+        };
+        vectors.push(vector);
+    }
+
+    // not on curve g2
+    {
+        let mut input_bytes: Vec<u8> = vec![];
+
+        let a1: G1Projective = rng.gen();
+        let a2: G2Projective = rng.gen();
+        let a1_bytes = encode_g1(a1);
+        let a2_bytes = encode_g2(a2);
+        input_bytes.extend(a1_bytes);
+        input_bytes.extend(a2_bytes);
+
+        let b1: G1Projective = rng.gen();
+        let b2: G2Projective = rng.gen();
+        let b1_bytes = encode_g1(b1);
+        let b2_bytes = encode_g2(b2);
+        input_bytes.extend(b1_bytes);
+        input_bytes.extend(b2_bytes);
+
+        let c1: G1Projective = rng.gen();
+        let c2: G2Projective = rand_g2_point_not_on_curve();
+        let c1_bytes = encode_g1(c1);
+        let c2_bytes = encode_g2(c2);
+        input_bytes.extend(c1_bytes);
+        input_bytes.extend(c2_bytes);
+
+        let input: String = hex::encode(input_bytes.clone());
+        let vector = VectorFail {
+            input,
+            expected_error: String::from("point is not on curve"),
+            name: format!("point_not_on_curve_g2"),
+        };
+        vectors.push(vector);
+    }
+
+    // incorrect subgroup g1
+    {
+        let mut input_bytes: Vec<u8> = vec![];
+
+        let a1: G1Projective = rng.gen();
+        let a2: G2Projective = rng.gen();
+        let a1_bytes = encode_g1(a1);
+        let a2_bytes = encode_g2(a2);
+        input_bytes.extend(a1_bytes);
+        input_bytes.extend(a2_bytes);
+
+        let b1: G1Projective = rng.gen();
+        let b2: G2Projective = rng.gen();
+        let b1_bytes = encode_g1(b1);
+        let b2_bytes = encode_g2(b2);
+        input_bytes.extend(b1_bytes);
+        input_bytes.extend(b2_bytes);
+
+        let c1: G1Projective = rand_g1_point_not_on_correct_subgroup();
+        let c2: G2Projective = rng.gen();
+        let c1_bytes = encode_g1(c1);
+        let c2_bytes = encode_g2(c2);
+        input_bytes.extend(c1_bytes);
+        input_bytes.extend(c2_bytes);
+
+        let input: String = hex::encode(input_bytes.clone());
+        let vector = VectorFail {
+            input,
+            expected_error: String::from("g1 point is not on correct subgroup"),
+            name: format!("incorrect_subgroup_g1"),
+        };
+        vectors.push(vector);
+    }
+
+    // incorrect subgroup g2
+    {
+        let mut input_bytes: Vec<u8> = vec![];
+
+        let a1: G1Projective = rng.gen();
+        let a2: G2Projective = rng.gen();
+        let a1_bytes = encode_g1(a1);
+        let a2_bytes = encode_g2(a2);
+        input_bytes.extend(a1_bytes);
+        input_bytes.extend(a2_bytes);
+
+        let b1: G1Projective = rng.gen();
+        let b2: G2Projective = rng.gen();
+        let b1_bytes = encode_g1(b1);
+        let b2_bytes = encode_g2(b2);
+        input_bytes.extend(b1_bytes);
+        input_bytes.extend(b2_bytes);
+
+        let c1: G1Projective = rng.gen();
+        let c2: G2Projective = rand_g2_point_not_on_correct_subgroup();
+        let c1_bytes = encode_g1(c1);
+        let c2_bytes = encode_g2(c2);
+        input_bytes.extend(c1_bytes);
+        input_bytes.extend(c2_bytes);
+
+        let input: String = hex::encode(input_bytes.clone());
+        let vector = VectorFail {
+            input,
+            expected_error: String::from("g2 point is not on correct subgroup"),
+            name: format!("incorrect_subgroup_g2"),
+        };
+        vectors.push(vector);
+    }
+
+    write_vectors_fail(vectors, "_g2_pairing_fail");
 }
