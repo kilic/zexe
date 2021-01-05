@@ -5,7 +5,7 @@ use algebra_core::{
     test_rng, CanonicalSerialize, One, Zero,
 };
 
-use crate::bls12_377::*;
+use crate::bw6_761::*;
 
 use core::ops::{AddAssign, Mul, MulAssign, Neg};
 use rand::Rng;
@@ -15,10 +15,15 @@ use std::fs::File;
 use std::io::prelude::*;
 
 const NUM_TESTS: usize = 100;
-const PREFIX: &str = "bls12377";
-const FE_SIZE: usize = 48;
-const SCALAR_SIZE: usize = 32;
-const WORD_SIZE: usize = 64;
+const PREFIX: &str = "bw6";
+
+const EVM_WORD_SIZE: usize = 32;
+const FE_SIZE: usize = 96;
+const FE_WORD_SIZE: usize = FE_SIZE;
+const FR_SIZE: usize = 48;
+const FR_WORD_SIZE: usize = 2 * EVM_WORD_SIZE;
+const FR_ZERO_OFFSET: usize = FR_WORD_SIZE - FR_SIZE;
+const G_WORD_SIZE: usize = 2 * FE_WORD_SIZE;
 
 #[derive(Serialize, Deserialize)]
 struct VectorSuccess {
@@ -48,8 +53,8 @@ fn write_vectors_fail(vectors: Vec<VectorFail>, name: &str) {
         .expect("must write vectors");
 }
 
-fn number_larger_than_modulus() -> Vec<u8> {
-    hex::decode("01ae3a4617c510eac63b05c06ca1493b1a22d9f300f5138f1ef3622fba094800170b5d44300000008508c00000000002")
+fn encoded_fe_larger_than_modulus() -> Vec<u8> {
+    hex::decode("0122e824fb83ce0ad187c94004faff3eb926186a81d14688528275ef8087be41707ba638e584e91903cebaff25b423048689c8ed12f9fd9071dcd3dc73ebff2e98a116c25667a8f8160cf8aeeaf0a437e6913e6870000082f49d00000000008f")
         .expect("must decode")
 }
 
@@ -61,7 +66,6 @@ fn rand_g1_point_not_on_correct_subgroup() -> G1Projective {
         let mut y: Fq = x.mul(x);
         y.mul_assign(x);
         y.add_assign(g1::Parameters::COEFF_B);
-        // y.sqrt().
         if let Some(y) = y.sqrt() {
             let p = G1Affine::new(x, y, false);
             assert!(p.is_on_curve());
@@ -75,8 +79,8 @@ fn rand_g2_point_not_on_correct_subgroup() -> G2Projective {
     let mut rng = test_rng();
 
     loop {
-        let x: Fq2 = rng.gen();
-        let mut y: Fq2 = x.mul(x);
+        let x: Fq = rng.gen();
+        let mut y: Fq = x.mul(x);
         y.mul_assign(x);
         y.add_assign(g2::Parameters::COEFF_B);
         if let Some(y) = y.sqrt() {
@@ -99,8 +103,8 @@ fn rand_g1_point_not_on_curve() -> G1Projective {
 
 fn rand_g2_point_not_on_curve() -> G2Projective {
     let mut rng = test_rng();
-    let x: Fq2 = rng.gen();
-    let y: Fq2 = rng.gen();
+    let x: Fq = rng.gen();
+    let y: Fq = rng.gen();
     let p = G2Affine::new(x, y, false);
     assert!(!p.is_on_curve());
     p.into_projective()
@@ -108,13 +112,13 @@ fn rand_g2_point_not_on_curve() -> G2Projective {
 
 #[test]
 fn generate_test_vectors() {
-    gen_g1_add_vectors();
-    gen_g1_mul_vectors();
-    gen_g1_multiexp_vectors();
-    gen_g2_add_vectors();
-    gen_g2_mul_vectors();
-    gen_g2_multiexp_vectors();
-    gen_pairing_vectors();
+    // gen_g1_add_vectors();
+    // gen_g1_mul_vectors();
+    // gen_g1_multiexp_vectors();
+    // gen_g2_add_vectors();
+    // gen_g2_mul_vectors();
+    // gen_g2_multiexp_vectors();
+    // gen_pairing_vectors();
     gen_fail_g1_add_vectors();
     gen_fail_g1_mul_vectors();
     gen_fail_g1_multiexp_vectors();
@@ -125,9 +129,7 @@ fn generate_test_vectors() {
 }
 
 fn encode_g1(p: G1Projective) -> Vec<u8> {
-    let pad_zeros: Vec<u8> = vec![0u8; WORD_SIZE - FE_SIZE];
     let mut bytes: Vec<u8> = vec![];
-
     let mut buf_x = vec![];
     let p_affine = p.into_affine();
 
@@ -135,7 +137,6 @@ fn encode_g1(p: G1Projective) -> Vec<u8> {
         .x
         .serialize(&mut buf_x)
         .expect("x coordinate must be serialized");
-    bytes.extend(pad_zeros.clone());
     bytes.extend(buf_x.iter().rev());
 
     let mut buf_y = vec![];
@@ -144,7 +145,6 @@ fn encode_g1(p: G1Projective) -> Vec<u8> {
         .y
         .serialize(&mut buf_y)
         .expect("y coordinate must be serialized");
-    bytes.extend(pad_zeros.clone());
     bytes.extend(buf_y.iter().rev());
 
     bytes
@@ -152,53 +152,33 @@ fn encode_g1(p: G1Projective) -> Vec<u8> {
 
 fn encode_g2(p: G2Projective) -> Vec<u8> {
     let mut bytes: Vec<u8> = vec![];
-    let pad_zeros: Vec<u8> = vec![0u8; WORD_SIZE - FE_SIZE];
 
     let mut buf = vec![];
     let p_affine = p.into_affine();
 
     p_affine
         .x
-        .c0
         .serialize(&mut buf)
-        .expect("c0 of x coordinate must be serialized");
-    bytes.extend(pad_zeros.clone());
-    bytes.extend(buf.iter().rev());
-    buf.clear();
-
-    p_affine
-        .x
-        .c1
-        .serialize(&mut buf)
-        .expect("c1 of x coordinate must be serialized");
-    bytes.extend(pad_zeros.clone());
+        .expect("x coordinate must be serialized");
     bytes.extend(buf.iter().rev());
     buf.clear();
 
     p_affine
         .y
-        .c0
         .serialize(&mut buf)
-        .expect("c0 of y coordinate must be serialized");
-    bytes.extend(pad_zeros.clone());
+        .expect("y coordinate must be serialized");
     bytes.extend(buf.iter().rev());
     buf.clear();
-
-    p_affine
-        .y
-        .c1
-        .serialize(&mut buf)
-        .expect("c1 of y coordinate must be serialized");
-    bytes.extend(pad_zeros.clone());
-    bytes.extend(buf.iter().rev());
 
     bytes
 }
 
 fn encode_fr(p: Fr) -> Vec<u8> {
     let mut bytes = vec![];
+    let pad_zeros: Vec<u8> = vec![0u8; FR_WORD_SIZE - FR_SIZE];
     let mut buf = vec![];
     p.serialize(&mut buf).expect("scalar must be serialized");
+    bytes.extend(pad_zeros.clone());
     bytes.extend(buf.iter().rev());
 
     bytes
@@ -382,11 +362,11 @@ fn gen_g2_multiexp_vectors() {
 fn gen_pairing_vectors() {
     let mut rng = test_rng();
     let mut vectors: Vec<VectorSuccess> = vec![];
-    let mut positive_result_bytes: Vec<u8> = vec![0u8; 32];
+    let mut positive_result_bytes: Vec<u8> = vec![0u8; EVM_WORD_SIZE];
     positive_result_bytes[31] = 1u8;
-    let negative_result_bytes: Vec<u8> = vec![0u8; 32];
-    let g1_inf_encoded: Vec<u8> = vec![0u8; 128];
-    let g2_inf_encoded: Vec<u8> = vec![0u8; 256];
+    let negative_result_bytes: Vec<u8> = vec![0u8; EVM_WORD_SIZE];
+    let g1_inf_encoded: Vec<u8> = vec![0u8; 2 * FE_SIZE];
+    let g2_inf_encoded: Vec<u8> = vec![0u8; 2 * FE_SIZE];
 
     let g1 = G1Projective::prime_subgroup_generator();
     let g2 = G2Projective::prime_subgroup_generator();
@@ -443,16 +423,11 @@ fn gen_pairing_vectors() {
                     let bytes_a2 = encode_g2(a2);
                     input_bytes.extend(bytes_a1);
                     input_bytes.extend(bytes_a2);
-                    // println!("e1\n{}", e1);
-                    // println!("e2\n{}", e2);
-                    // println!("acc\n{}", acc);
                     e1.mul_assign(e2);
                     acc.add_assign(e1);
                 }
-                // println!("acc\n{}", acc);
                 // last pair
                 let a1 = g1.mul(acc.neg());
-                // println!("nacc\n{}", acc.neg());
                 let a2 = g2.clone();
                 let bytes_a1 = encode_g1(a1);
                 let bytes_a2 = encode_g2(a2);
@@ -540,15 +515,15 @@ fn gen_fail_vectors(input_len: usize) -> Vec<VectorFail> {
     }
 
     // violate top zeros
-    {
-        let input: String = hex::encode(vec![1u8; input_len]);
-        let vector = VectorFail {
-            input,
-            expected_error: String::from("invalid field element top bytes"),
-            name: format!("violate_top_zero_bytes"),
-        };
-        vectors.push(vector);
-    }
+    // {
+    //     let input: String = hex::encode(vec![1u8; input_len]);
+    //     let vector = VectorFail {
+    //         input,
+    //         expected_error: String::from("invalid field element top bytes"),
+    //         name: format!("violate_top_zero_bytes"),
+    //     };
+    //     vectors.push(vector);
+    // }
 
     vectors
 }
@@ -556,21 +531,19 @@ fn gen_fail_vectors(input_len: usize) -> Vec<VectorFail> {
 fn gen_fail_g1_add_vectors() {
     let mut rng = test_rng();
 
-    let input_len = 4 * WORD_SIZE;
-    let pad_zeros: Vec<u8> = vec![0u8; WORD_SIZE - FE_SIZE];
+    let input_len = 4 * FE_WORD_SIZE;
 
     let mut vectors: Vec<VectorFail> = gen_fail_vectors(input_len);
 
-    // large modulus
+    // larger than modulus
     {
         let a: G1Projective = rng.gen();
 
         let mut input_bytes: Vec<u8> = vec![];
         let a_bytes = encode_g1(a);
         input_bytes.extend(a_bytes);
-        input_bytes.extend(pad_zeros.clone());
-        input_bytes.extend(number_larger_than_modulus());
-        input_bytes.extend(vec![0u8; WORD_SIZE]);
+        input_bytes.extend(encoded_fe_larger_than_modulus());
+        input_bytes.extend(vec![0u8; FE_SIZE]);
 
         let input: String = hex::encode(input_bytes.clone());
         let vector = VectorFail {
@@ -605,20 +578,19 @@ fn gen_fail_g1_add_vectors() {
 }
 
 fn gen_fail_g1_mul_vectors() {
-    let input_len = 2 * WORD_SIZE + SCALAR_SIZE;
-    let pad_zeros: Vec<u8> = vec![0u8; WORD_SIZE - FE_SIZE];
+    let input_len = 2 * FE_WORD_SIZE + FR_WORD_SIZE;
+    // let pad_zeros: Vec<u8> = vec![0u8; FR_ZERO_OFFSET];
     let mut vectors: Vec<VectorFail> = gen_fail_vectors(input_len);
 
     // large modulus
     {
         let mut input_bytes: Vec<u8> = vec![];
         // x
-        input_bytes.extend(pad_zeros.clone());
-        input_bytes.extend(number_larger_than_modulus());
+        input_bytes.extend(encoded_fe_larger_than_modulus());
         // y
-        input_bytes.extend(vec![0u8; WORD_SIZE]);
+        input_bytes.extend(vec![0u8; FE_WORD_SIZE]);
         // e
-        input_bytes.extend(vec![0u8; SCALAR_SIZE]);
+        input_bytes.extend(vec![0u8; FR_WORD_SIZE]);
 
         let input: String = hex::encode(input_bytes.clone());
         let vector = VectorFail {
@@ -637,7 +609,7 @@ fn gen_fail_g1_mul_vectors() {
 
         let mut input_bytes: Vec<u8> = vec![];
         input_bytes.extend(a_bytes);
-        input_bytes.extend(vec![0u8; SCALAR_SIZE]);
+        input_bytes.extend(vec![0u8; FR_WORD_SIZE]);
 
         let input: String = hex::encode(input_bytes.clone());
         let vector = VectorFail {
@@ -647,14 +619,16 @@ fn gen_fail_g1_mul_vectors() {
         };
         vectors.push(vector);
     }
+
+    // TODO: violate top zeros of fr
     write_vectors_fail(vectors, "_g1_mul_fail");
 }
 
 fn gen_fail_g1_multiexp_vectors() {
     let mut rng = test_rng();
 
-    let input_len = 3 * (2 * WORD_SIZE + SCALAR_SIZE);
-    let pad_zeros: Vec<u8> = vec![0u8; WORD_SIZE - FE_SIZE];
+    let input_len = 3 * (2 * FE_WORD_SIZE + FR_WORD_SIZE);
+    let pad_zeros: Vec<u8> = vec![0u8; FR_ZERO_OFFSET];
 
     let mut vectors: Vec<VectorFail> = gen_fail_vectors(input_len);
 
@@ -677,12 +651,11 @@ fn gen_fail_g1_multiexp_vectors() {
         input_bytes.extend(b_bytes);
         input_bytes.extend(e2_bytes);
 
-        input_bytes.extend(pad_zeros.clone());
-        input_bytes.extend(number_larger_than_modulus());
+        input_bytes.extend(encoded_fe_larger_than_modulus());
         // y
-        input_bytes.extend(vec![0u8; WORD_SIZE]);
+        input_bytes.extend(vec![0u8; FE_WORD_SIZE]);
         // e
-        input_bytes.extend(vec![0u8; SCALAR_SIZE]);
+        input_bytes.extend(vec![0u8; FR_WORD_SIZE]);
 
         let input: String = hex::encode(input_bytes.clone());
         let vector = VectorFail {
@@ -733,27 +706,19 @@ fn gen_fail_g1_multiexp_vectors() {
 fn gen_fail_g2_add_vectors() {
     let mut rng = test_rng();
 
-    let input_len = 8 * WORD_SIZE;
-    let pad_zeros: Vec<u8> = vec![0u8; WORD_SIZE - FE_SIZE];
+    let input_len = 4 * FE_WORD_SIZE;
 
     let mut vectors: Vec<VectorFail> = gen_fail_vectors(input_len);
 
-    // large modulus
+    // larger than modulus
     {
         let a: G2Projective = rng.gen();
 
         let mut input_bytes: Vec<u8> = vec![];
         let a_bytes = encode_g2(a);
-
         input_bytes.extend(a_bytes);
-
-        // x0
-        input_bytes.extend(pad_zeros.clone());
-        input_bytes.extend(number_larger_than_modulus());
-        // x1, y0, y1
-        input_bytes.extend(vec![0u8; WORD_SIZE]);
-        input_bytes.extend(vec![0u8; WORD_SIZE]);
-        input_bytes.extend(vec![0u8; WORD_SIZE]);
+        input_bytes.extend(encoded_fe_larger_than_modulus());
+        input_bytes.extend(vec![0u8; FE_WORD_SIZE]);
 
         let input: String = hex::encode(input_bytes.clone());
         let vector = VectorFail {
@@ -788,23 +753,19 @@ fn gen_fail_g2_add_vectors() {
 }
 
 fn gen_fail_g2_mul_vectors() {
-    let input_len = 2 * 2 * WORD_SIZE + SCALAR_SIZE;
-    let pad_zeros: Vec<u8> = vec![0u8; WORD_SIZE - FE_SIZE];
+    let input_len = 2 * FE_WORD_SIZE + FR_WORD_SIZE;
+    // let pad_zeros: Vec<u8> = vec![0u8; FR_ZERO_OFFSET];
     let mut vectors: Vec<VectorFail> = gen_fail_vectors(input_len);
 
     // large modulus
     {
         let mut input_bytes: Vec<u8> = vec![];
-
-        // x0
-        input_bytes.extend(pad_zeros.clone());
-        input_bytes.extend(number_larger_than_modulus());
-        // x1, y0, y1
-        input_bytes.extend(vec![0u8; WORD_SIZE]);
-        input_bytes.extend(vec![0u8; WORD_SIZE]);
-        input_bytes.extend(vec![0u8; WORD_SIZE]);
+        // x
+        input_bytes.extend(encoded_fe_larger_than_modulus());
+        // y
+        input_bytes.extend(vec![0u8; FE_WORD_SIZE]);
         // e
-        input_bytes.extend(vec![0u8; SCALAR_SIZE]);
+        input_bytes.extend(vec![0u8; FR_WORD_SIZE]);
 
         let input: String = hex::encode(input_bytes.clone());
         let vector = VectorFail {
@@ -823,7 +784,7 @@ fn gen_fail_g2_mul_vectors() {
 
         let mut input_bytes: Vec<u8> = vec![];
         input_bytes.extend(a_bytes);
-        input_bytes.extend(vec![0u8; SCALAR_SIZE]);
+        input_bytes.extend(vec![0u8; FR_WORD_SIZE]);
 
         let input: String = hex::encode(input_bytes.clone());
         let vector = VectorFail {
@@ -833,14 +794,16 @@ fn gen_fail_g2_mul_vectors() {
         };
         vectors.push(vector);
     }
+
+    // TODO: violate top zeros of fr
     write_vectors_fail(vectors, "_g2_mul_fail");
 }
 
 fn gen_fail_g2_multiexp_vectors() {
     let mut rng = test_rng();
 
-    let input_len = 3 * (2 * 2 * WORD_SIZE + SCALAR_SIZE);
-    let pad_zeros: Vec<u8> = vec![0u8; WORD_SIZE - FE_SIZE];
+    let input_len = 3 * (2 * FE_WORD_SIZE + FR_WORD_SIZE);
+    let pad_zeros: Vec<u8> = vec![0u8; FR_ZERO_OFFSET];
 
     let mut vectors: Vec<VectorFail> = gen_fail_vectors(input_len);
 
@@ -863,15 +826,11 @@ fn gen_fail_g2_multiexp_vectors() {
         input_bytes.extend(b_bytes);
         input_bytes.extend(e2_bytes);
 
-        // x0
-        input_bytes.extend(pad_zeros.clone());
-        input_bytes.extend(number_larger_than_modulus());
-        // x1, y0, y1
-        input_bytes.extend(vec![0u8; WORD_SIZE]);
-        input_bytes.extend(vec![0u8; WORD_SIZE]);
-        input_bytes.extend(vec![0u8; WORD_SIZE]);
+        input_bytes.extend(encoded_fe_larger_than_modulus());
+        // y
+        input_bytes.extend(vec![0u8; FE_WORD_SIZE]);
         // e
-        input_bytes.extend(vec![0u8; SCALAR_SIZE]);
+        input_bytes.extend(vec![0u8; FR_WORD_SIZE]);
 
         let input: String = hex::encode(input_bytes.clone());
         let vector = VectorFail {
@@ -921,9 +880,8 @@ fn gen_fail_g2_multiexp_vectors() {
 
 fn gen_fail_pairing() {
     let mut rng = test_rng();
-    let input_len = 3 * 4 * WORD_SIZE;
+    let input_len = 3 * 4 * G_WORD_SIZE;
     let mut vectors: Vec<VectorFail> = gen_fail_vectors(input_len);
-    let pad_zeros: Vec<u8> = vec![0u8; WORD_SIZE - FE_SIZE];
 
     // large modulus
     {
@@ -940,17 +898,11 @@ fn gen_fail_pairing() {
         let b2: G2Projective = rng.gen();
         let b1_bytes = encode_g1(b1);
         let b2_bytes = encode_g2(b2);
-
         input_bytes.extend(b1_bytes);
         input_bytes.extend(b2_bytes);
 
-        // c1x
-        input_bytes.extend(pad_zeros.clone());
-        input_bytes.extend(number_larger_than_modulus());
-        // c1y
-        input_bytes.extend(vec![0u8; WORD_SIZE]);
-        // c2
-        input_bytes.extend(vec![0u8; 4 * WORD_SIZE]);
+        input_bytes.extend(encoded_fe_larger_than_modulus());
+        input_bytes.extend(vec![0u8; 3 * FE_WORD_SIZE]);
 
         let input: String = hex::encode(input_bytes.clone());
         let vector = VectorFail {

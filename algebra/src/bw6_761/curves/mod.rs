@@ -10,6 +10,9 @@ pub mod g2;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+pub mod eip3026_test;
+
 #[derive(PartialEq, Eq)]
 pub struct Parameters;
 
